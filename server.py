@@ -60,10 +60,22 @@ def get_stack_file(stack_id: int) -> str:
     except Exception as e:
         return f"Erro ao ler arquivo da stack {stack_id}: {str(e)}"
 
-# if __name__ == "__main__":
-#     # Roda o servidor MCP no modo SSE (Server-Sent Events) na porta 8000
-#     mcp.run(transport="sse")
-
 if __name__ == "__main__":
-    # host="0.0.0.0" libera o acesso para a rede externa do Docker
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    import uvicorn
+    
+    # O FastMCP força '127.0.0.1' internamente. Vamos interceptar a chamada 
+    # do uvicorn para forçar '0.0.0.0' e permitir acesso externo ao Docker.
+    original_run = uvicorn.run
+
+    def patched_run(app, **kwargs):
+        # Sobrescreve host e port para garantir acesso externo
+        kwargs["host"] = "0.0.0.0"
+        kwargs["port"] = 8000
+        print(f"🔧 Patch aplicado: Iniciando Uvicorn em {kwargs['host']}:{kwargs['port']}")
+        return original_run(app, **kwargs)
+
+    # Aplica o patch
+    uvicorn.run = patched_run
+    
+    # Inicia o servidor normalmente (sem argumentos extras que causam erro)
+    mcp.run(transport="sse")
