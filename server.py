@@ -60,6 +60,10 @@ def get_stack_file(stack_id: int) -> str:
     except Exception as e:
         return f"Erro ao ler arquivo da stack {stack_id}: {str(e)}"
 
+# if __name__ == "__main__":
+#     # Roda o servidor MCP no modo SSE (Server-Sent Events) na porta 8000
+#     mcp.run(transport="sse")
+
 if __name__ == "__main__":
-    # Roda o servidor MCP no modo SSE (Server-Sent Events) na porta 8000
-    mcp.run(transport="sse")
+    # host="0.0.0.0" libera o acesso para a rede externa do Docker
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
