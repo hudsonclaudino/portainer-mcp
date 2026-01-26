@@ -1,81 +1,101 @@
 import os
 import requests
-from mcp.server.fastmcp import FastMCP
+import uvicorn
+from mcp.server import Server
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.requests import Request
+from starlette.responses import Response
 
-# Configurações via Variáveis de Ambiente
+# --- Configurações ---
 PORTAINER_URL = os.getenv("PORTAINER_URL", "http://portainer:9000")
 API_TOKEN = os.getenv("PORTAINER_API_KEY")
 
 if not API_TOKEN:
-    raise ValueError("A variável de ambiente PORTAINER_API_KEY é obrigatória.")
+    raise ValueError("A variavel de ambiente PORTAINER_API_KEY e obrigatoria.")
 
 HEADERS = {"X-API-Key": API_TOKEN}
 
-# Inicializa o servidor MCP
-mcp = FastMCP("Portainer Manager")
+# --- Inicializa o Servidor MCP (Modo Server, não FastMCP) ---
+mcp_server = Server("portainer-manager")
 
-@mcp.tool()
-def list_stacks() -> str:
-    """
-    Lista todas as Stacks do Portainer.
-    Retorna: ID, Nome, Status e EndpointID.
-    """
+# --- Ferramentas ---
+@mcp_server.tool()
+async def list_stacks() -> str:
+    """Lista todas as Stacks do Portainer. Retorna: ID, Nome, Status."""
     try:
         url = f"{PORTAINER_URL}/api/stacks"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         stacks = resp.json()
         
-        if not stacks:
-            return "Nenhuma stack encontrada."
+        if not stacks: return "Nenhuma stack encontrada."
 
         output = []
         for s in stacks:
-            # Status 1=Active, 2=Inactive (pode variar conforme versão)
-            status = "Ativo" if s.get('Status') == 1 else f"Status-Code-{s.get('Status')}"
+            status = "Ativo" if s.get('Status') == 1 else f"Status-{s.get('Status')}"
             output.append(f"ID: {s['Id']} | Name: {s['Name']} | Status: {status}")
-        
         return "\n".join(output)
     except Exception as e:
         return f"Erro ao conectar ao Portainer: {str(e)}"
 
-@mcp.tool()
-def get_stack_file(stack_id: int) -> str:
-    """
-    Lê o arquivo docker-compose.yml (StackFileContent) de uma stack específica.
-    Args:
-        stack_id: O ID numérico da stack (obtido via list_stacks).
-    """
+@mcp_server.tool()
+async def get_stack_file(stack_id: int) -> str:
+    """Lê o arquivo docker-compose.yml de uma stack pelo ID."""
     try:
         url = f"{PORTAINER_URL}/api/stacks/{stack_id}/file"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        
-        content = data.get("StackFileContent")
-        if not content:
-            return "Conteúdo do arquivo não encontrado ou vazio."
-            
-        return content
+        return data.get("StackFileContent", "Conteudo vazio.")
     except Exception as e:
-        return f"Erro ao ler arquivo da stack {stack_id}: {str(e)}"
+        return f"Erro ao ler stack {stack_id}: {str(e)}"
+
+# --- Encanamento SSE (Server-Sent Events) ---
+async def handle_sse(request: Request):
+    async with mcp_server.create_initialization_context() as init_context:
+        transport = SseServerTransport("/messages")
+        async with transport.connect_sse(request.scope, request.receive, request._send) as streams:
+            await mcp_server.run(streams[0], streams[1], init_context)
+
+async def handle_messages(request: Request):
+    # Endpoint para receber mensagens POST do cliente
+    return Response("Not implemented (SSE only)", status_code=405) # Simplificacao, o transporte SSE lida com isso internamente via sessao
+
+# Como configurar Starlette para MCP e complexo, vamos usar a rota direta do sse-transport se disponivel
+# Ou usar o metodo manual simples:
+async def sse_endpoint(request):
+    transport = SseServerTransport("/messages")
+    # A logica de conexao SSE manual requer cuidado com loops.
+    # Vamos usar o 'sse_starlette' se possivel ou usar a implementacao padrao.
+    pass
+
+# --- SIMPLIFICAÇÃO ---
+# Para não complicar com Starlette manual, vamos usar o wrapper do MCP se ele permitir,
+# mas como falhou, vamos forcar o uvicorn no app Starlette.
+
+from mcp.server.sse import SseServerTransport
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+# Cria app Starlette
+app = Starlette(debug=True)
+
+# Endpoint SSE oficial
+@app.route("/sse")
+async def handle_sse_connect(request: Request):
+    transport = SseServerTransport("/messages")
+    async with mcp_server.create_initialization_context() as init_ctx:
+        async with transport.connect_sse(request.scope, request.receive, request._send) as (read, write):
+            await mcp_server.run(read, write, init_ctx)
+
+@app.route("/messages", methods=["POST"])
+async def handle_messages(request: Request):
+    # O cliente MCP manda mensagens POST para cá
+    await SseServerTransport("/messages").handle_post_message(request.scope, request.receive, request._send)
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    # O FastMCP força '127.0.0.1' internamente. Vamos interceptar a chamada 
-    # do uvicorn para forçar '0.0.0.0' e permitir acesso externo ao Docker.
-    original_run = uvicorn.run
-
-    def patched_run(app, **kwargs):
-        # Sobrescreve host e port para garantir acesso externo
-        kwargs["host"] = "0.0.0.0"
-        kwargs["port"] = 8000
-        print(f"🔧 Patch aplicado: Iniciando Uvicorn em {kwargs['host']}:{kwargs['port']}")
-        return original_run(app, **kwargs)
-
-    # Aplica o patch
-    uvicorn.run = patched_run
-    
-    # Inicia o servidor normalmente (sem argumentos extras que causam erro)
-    mcp.run(transport="sse")
+    # AQUI ESTÁ O SEGREDO: host="0.0.0.0"
+    print("🚀 Iniciando Servidor MCP no IP 0.0.0.0...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
