@@ -14,7 +14,7 @@ HEADERS = {"X-API-Key": API_TOKEN}
 
 # --- Inicializa o Servidor MCP (Modo FastMCP) ---
 # Usando FastMCP para simplificar a definição de ferramentas e transporte
-mcp = FastMCP("portainer-manager")
+mcp = FastMCP("portainer-manager", host="0.0.0.0")
 
 # --- Ferramentas ---
 @mcp.tool()
